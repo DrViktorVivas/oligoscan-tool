@@ -3,69 +3,87 @@ import pdfplumber
 import re
 from fpdf import FPDF
 
-# --- 1. CONFIGURATION & UI SETUP ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="OligoScan Adjustment Tool", layout="centered")
 st.title("🧬 OligoScan Clinical Adjustment Tool")
 st.markdown("""
-This tool corrects OligoScan results based on **Bioavailability Logic**:
-1.  **Detox Blockage:** Checks Sulfur + Methylation (B6/B12).
-2.  **Skin Optics:** Adjusts Zinc/Minerals based on Fitzpatrick Scale.
+**Full Spectrum Analysis:**
+* **Correction:** Adjusts Zinc (Skin Optics) and Magnesium (Serum Correlation).
+* **Projection:** Recalculates Heavy Metal burden if Detox Blockage (Sulfur/Methylation) is detected.
+* **Validation:** Lists all other analytes as confirmed/unchanged.
 """)
 
 # --- 2. HELPER FUNCTIONS ---
-
 def clean_text(text):
-    """
-    Replaces emojis and special chars with Latin-1 compatible text
-    to prevent PDF generation errors.
-    """
-    if not isinstance(text, str):
-        return str(text)
-    
-    # Replace specific emojis with text tags
-    replacements = {
-        "⛔": "[BLOCKED]",
-        "⚠️": "[RISK]",
-        "✅": "[OK]",
-        "🧬": "",
-        "🔴": "[ALERT]",
-        "📄": ""
-    }
-    
-    for char, replacement in replacements.items():
-        text = text.replace(char, replacement)
-    
-    # Remove any other characters that aren't Latin-1 compatible
+    """Sanitize text for Latin-1 PDF encoding."""
+    if not isinstance(text, str): return str(text)
+    replacements = {"⛔": "[BLOCKED]", "⚠️": "[RISK]", "✅": "[OK]", "🧬": "", "🔴": "[ALERT]", "✔": ""}
+    for char, rep in replacements.items():
+        text = text.replace(char, rep)
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def extract_data_from_pdf(pdf_file):
     data = {}
     full_text = ""
-    
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
             full_text += page.extract_text() + "\n"
-            
-    # Regex patterns
+    
+    # Regex for ALL analytes found in the provided reports
+    # Captures formats like "Silicon 10,9" or "Sodium Na 74.7"
     patterns = {
-        'Sulfur': r"Sulphur\s+([\d,.]+)",
-        'Zinc': r"Zinc\s+([\d,.]+)",
+        # --- MINERALS ---
+        'Calcium': r"Calcium\s+([\d,.]+)",
         'Magnesium': r"Magnesium\s+([\d,.]+)",
-        'Lead': r"Lead\s+([\d,.]+)",
-        'Mercury': r"Mercury\s+([\d,.]+)",
-        'Cadmium': r"Cadmium\s+([\d,.]+)",
+        'Phosphorus': r"Phosphorus\s+([\d,.]+)",
+        'Silicon': r"Silicon\s+([\d,.]+)",
+        'Sodium': r"Sodium.*?\s+([\d,.]+)",
+        'Potassium': r"Potassium.*?\s+([\d,.]+)",
+        'Copper': r"Copper\s+([\d,.]+)",
+        'Zinc': r"Zinc\s+([\d,.]+)",
+        'Iron': r"Iron.*?\s+([\d,.]+)",
+        'Manganese': r"Manganese.*?\s+([\d,.]+)",
+        'Chromium': r"Chromium\s+([\d,.]+)",
+        'Vanadium': r"Vanadium\s+([\d,.]+)",
+        'Boron': r"Boron\s+([\d,.]+)",
+        'Cobalt': r"Cobalt.*?\s+([\d,.]+)",
+        'Molybdenum': r"Molybdenum.*?\s+([\d,.]+)",
+        'Iodine': r"[Il]odine\s+([\d,.]+)", # Handles OCR 'lodine' vs 'Iodine'
+        'Lithium': r"Lithium\s+([\d,.]+)",
+        'Germanium': r"Germanium\s+([\d,.]+)",
+        'Selenium': r"Selenium\s+([\d,.]+)",
+        'Sulfur': r"Sulphur\s+([\d,.]+)",
+        'Fluorine': r"Fluor\s+([\d,.]+)",
+        
+        # --- HEAVY METALS ---
         'Aluminum': r"Aluminium\s+([\d,.]+)",
-        'Gadolinium': r"Gadolinium\s+([\d,.]+)",
+        'Antimony': r"Antimony.*?\s+([\d,.]+)",
+        'Silver': r"Silver\s+([\d,.]+)",
+        'Arsenic': r"Arsenic.*?\s+([\d,.]+)",
+        'Barium': r"Barium.*?\s+([\d,.]+)",
+        'Beryllium': r"Beryllium.*?\s+([\d,.]+)",
+        'Bismuth': r"Bismuth\s+([\d,.]+)",
+        'Cadmium': r"Cadmium\s+([\d,.]+)",
+        'Mercury': r"Mercury\s+([\d,.]+)",
+        'Nickel': r"Nickel\s+([\d,.]+)",
+        'Platinum': r"Platinum\s+([\d,.]+)",
+        'Lead': r"Lead\s+([\d,.]+)",
+        'Thallium': r"Thallium.*?\s+([\d,.]+)",
+        'Thorium': r"Thorium.*?\s+([\d,.]+)",
+        'Gadolinium': r"Gadolinium.*?\s+([\d,.]+)",
+        'Tin': r"Tin\s+([\d,.]+)",
+        
+        # --- VITAMINS ---
         'Vit_B6': r"Vitamin B6\s+(\d+)%",
-        'Vit_B12': r"Vitamin B12\s+(\d+)%",
-        'Vit_B9': r"Vitamin B9.*?\s+(\d+)%"
+        'Vit_B12': r"Vitamin B12\s+(\d+)%"
     }
     
     for key, pattern in patterns.items():
         match = re.search(pattern, full_text, re.IGNORECASE)
         if match:
-            clean_val = match.group(1).replace(',', '.')
             try:
+                # Handle European decimals (10,9 -> 10.9)
+                clean_val = match.group(1).replace(',', '.')
                 data[key] = float(clean_val)
             except ValueError:
                 data[key] = 0.0
@@ -74,162 +92,178 @@ def extract_data_from_pdf(pdf_file):
             
     return data
 
-# --- 3. THE ADJUSTMENT ENGINE ---
+# --- 3. UNIVERSAL ADJUSTMENT ENGINE ---
 def run_adjustment(data, skin_type, patient_name):
     flags = []
     results = {}
     
-    # Inputs
+    # 1. Blockage Status
     sulfur = data.get('Sulfur', 0)
     vit_b6 = data.get('Vit_B6', 100)
     vit_b12 = data.get('Vit_B12', 100)
     
-    # Blockage Logic
-    methylation_failure = (vit_b6 < 60) or (vit_b12 < 60)
-    sulfur_blockage = (sulfur < 48.1)
-    is_blocked = methylation_failure or sulfur_blockage
-    
-    results['Metals_Status'] = "OPTIMAL"
-    
-    metals = ['Lead', 'Mercury', 'Cadmium', 'Aluminum', 'Gadolinium']
+    is_blocked = (vit_b6 < 60) or (vit_b12 < 60) or (sulfur < 48.1)
+    status_msg = "⛔ DETOX BLOCKED" if is_blocked else "✅ OPTIMAL"
     
     if is_blocked:
-        results['Metals_Status'] = "⛔ BLOCKED (False Negatives Likely)"
-        flags.append(f"CRITICAL: Detox is blocked (Sulfur: {sulfur}, B6: {vit_b6}%, B12: {vit_b12}%).")
-        flags.append("Warning: 'Normal' heavy metal readings are likely FALSE NEGATIVES due to retention.")
+        flags.append(f"Blockage Detected: Sulfur ({sulfur}) or B6/B12 (<60%) is low.")
+        flags.append("Action: Applied 3.5x Projection Multiplier to all Heavy Metals.")
+
+    # 2. Iterate ALL Data Points
+    # Define lists to keep report organized
+    mineral_list = ['Calcium', 'Magnesium', 'Phosphorus', 'Silicon', 'Sodium', 'Potassium', 
+                   'Copper', 'Zinc', 'Iron', 'Manganese', 'Chromium', 'Vanadium', 'Boron', 
+                   'Cobalt', 'Molybdenum', 'Iodine', 'Lithium', 'Germanium', 'Selenium', 
+                   'Sulfur', 'Fluorine']
+                   
+    metal_list = ['Aluminum', 'Antimony', 'Silver', 'Arsenic', 'Barium', 'Beryllium', 
+                 'Bismuth', 'Cadmium', 'Mercury', 'Nickel', 'Platinum', 'Lead', 
+                 'Thallium', 'Thorium', 'Gadolinium', 'Tin']
+
+    # --- PROCESS MINERALS ---
+    for item in mineral_list:
+        raw = data.get(item, 0.0)
+        adj = raw # Default: No change
         
-        for metal in metals:
-            val = data.get(metal, 0)
-            if val < 0.02:
-                results[metal] = "⚠️ HIGH RISK (Hidden)"
+        # Specific Correction Rules
+        if item == 'Magnesium':
+            adj = raw * 1.35
+            
+        if item == 'Zinc':
+            if skin_type == "I-II (Pale)":
+                adj = raw * 0.90
+            elif skin_type == "III-IV (Medium)":
+                adj = raw * 1.15
             else:
-                results[metal] = f"{val} (Confirmed High)"
-    else:
-        for metal in metals:
-            results[metal] = data.get(metal, 0)
+                adj = raw * 1.25
+                
+        results[item] = round(adj, 4)
 
-    # Mineral Logic
-    results['Magnesium_Adj'] = round(data.get('Magnesium', 0) * 1.35, 2)
-    
-    zinc_raw = data.get('Zinc', 0)
-    if skin_type == "I-II (Pale)":
-        results['Zinc_Adj'] = round(zinc_raw * 0.90, 2)
-        flags.append("Zinc adjusted down (-10%) for Pale Skin reflectance.")
-    elif skin_type == "III-IV (Medium)":
-        results['Zinc_Adj'] = round(zinc_raw * 1.15, 2)
-        flags.append("Zinc adjusted up (+15%) for Melanin/Vascular compensation.")
-    else:
-        results['Zinc_Adj'] = round(zinc_raw * 1.25, 2)
+    # --- PROCESS METALS ---
+    for item in metal_list:
+        raw = data.get(item, 0.0)
+        adj = raw
         
-    return results, flags
+        # Blockage Rule: If blocked and reading is "safe" (<0.02), assume it's a false negative
+        if is_blocked and raw < 0.02:
+            adj = raw * 3.5 # The Projection Multiplier
+            
+        results[item] = round(adj, 5)
 
-# --- 4. PDF REPORT GENERATOR ---
-def create_pdf(patient_name, original_data, results, flags):
+    return results, flags, status_msg, mineral_list, metal_list
+
+# --- 4. PDF GENERATOR ---
+def create_pdf(patient_name, original_data, results, flags, status_msg, mineral_list, metal_list):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    
-    # Use clean_text() to sanitize inputs
-    clean_name = clean_text(patient_name)
-    clean_status = clean_text(results['Metals_Status'])
-    
-    # Header
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, txt=f"Clinical Adjustment Report: {clean_name}", ln=True, align='C')
-    pdf.line(10, 20, 200, 20)
-    pdf.ln(15)
-    
-    # Status Section
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, f"Detox Status: {clean_status}", ln=True)
     pdf.set_font("Arial", size=10)
     
-    if "BLOCKED" in clean_status:
-        pdf.set_text_color(220, 50, 50) # Red
-        pdf.multi_cell(0, 10, clean_text("NOTE: Patient lacks Methylation cofactors (B6/B12) or Sulfur needed to mobilize metals. Low scan readings are likely false negatives."))
-        pdf.set_text_color(0, 0, 0)
-    
+    # Title
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, clean_text(f"Adjusted Clinical Report: {patient_name}"), ln=True, align='C')
     pdf.ln(5)
     
-    # Heavy Metals Table
+    # Status
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Heavy Metal Projections:", ln=True)
-    pdf.set_font("Arial", size=10)
+    pdf.cell(0, 10, clean_text(f"Detox Status: {status_msg}"), ln=True)
     
-    metals = ['Lead', 'Mercury', 'Cadmium', 'Aluminum', 'Gadolinium']
-    for metal in metals:
-        raw = original_data.get(metal, 0)
-        adj = results[metal]
-        
-        pdf.cell(50, 10, clean_text(metal), border=1)
-        pdf.cell(50, 10, clean_text(f"Scan: {raw}"), border=1)
-        pdf.cell(80, 10, clean_text(f"Adjusted: {adj}"), border=1, ln=True)
-
+    if flags:
+        pdf.set_font("Arial", 'I', 9)
+        for flag in flags:
+            pdf.cell(0, 5, clean_text(f"* {flag}"), ln=True)
     pdf.ln(10)
     
-    # Minerals Table
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Mineral Bioavailability Corrections:", ln=True)
-    pdf.set_font("Arial", size=10)
-    
-    # Zinc
-    pdf.cell(50, 10, "Zinc", border=1)
-    pdf.cell(50, 10, clean_text(f"Scan: {original_data.get('Zinc',0)}"), border=1)
-    pdf.cell(80, 10, clean_text(f"Adjusted: {results['Zinc_Adj']}"), border=1, ln=True)
-    
-    # Magnesium
-    pdf.cell(50, 10, "Magnesium", border=1)
-    pdf.cell(50, 10, clean_text(f"Scan: {original_data.get('Magnesium',0)}"), border=1)
-    pdf.cell(80, 10, clean_text(f"Adjusted: {results['Magnesium_Adj']}"), border=1, ln=True)
-    
-    # Flags Section
-    if flags:
-        pdf.ln(10)
-        pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, "Clinical Notes & Flags:", ln=True)
+    # --- TABLE HEADER FUNCTION ---
+    def print_header(title):
+        pdf.set_font("Arial", 'B', 11)
+        pdf.set_fill_color(200, 220, 255)
+        pdf.cell(60, 8, clean_text(title), 1, 0, 'C', 1)
+        pdf.cell(40, 8, "Original", 1, 0, 'C', 1)
+        pdf.cell(40, 8, "Adjusted", 1, 0, 'C', 1)
+        pdf.cell(50, 8, "Status", 1, 1, 'C', 1)
         pdf.set_font("Arial", size=10)
-        for flag in flags:
-            pdf.multi_cell(0, 10, clean_text(f"- {flag}"))
+
+    # --- MINERALS TABLE ---
+    print_header("MINERALS")
     
-    # Output
+    for item in mineral_list:
+        raw = original_data.get(item, 0.0)
+        adj = results.get(item, 0.0)
+        
+        # Determine Status Label
+        note = ""
+        if item == 'Zinc': note = "Optics Adj."
+        elif item == 'Magnesium': note = "Serum Corr."
+        elif raw != adj: note = "Projected"
+        
+        # Highlight significant changes
+        pdf.set_text_color(0, 0, 0)
+        if raw != adj: pdf.set_font("Arial", 'B', 10)
+        else: pdf.set_font("Arial", '', 10)
+            
+        pdf.cell(60, 7, clean_text(item), 1)
+        pdf.cell(40, 7, str(raw), 1, 0, 'C')
+        pdf.cell(40, 7, str(adj), 1, 0, 'C')
+        pdf.cell(50, 7, clean_text(note), 1, 1, 'C')
+        
+    pdf.ln(10)
+    
+    # --- METALS TABLE ---
+    print_header("HEAVY METALS")
+    
+    for item in metal_list:
+        raw = original_data.get(item, 0.0)
+        adj = results.get(item, 0.0)
+        
+        note = ""
+        is_changed = (raw != adj)
+        
+        if is_changed:
+            note = "Hidden/Projected"
+            pdf.set_text_color(200, 0, 0) # Red text for projected metals
+        else:
+            pdf.set_text_color(0, 0, 0)
+            
+        pdf.cell(60, 7, clean_text(item), 1)
+        pdf.cell(40, 7, str(raw), 1, 0, 'C')
+        pdf.cell(40, 7, str(adj), 1, 0, 'C')
+        pdf.cell(50, 7, clean_text(note), 1, 1, 'C')
+        
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
-# --- 5. MAIN APP INTERFACE ---
+# --- 5. APP UI ---
 with st.sidebar:
-    st.header("Patient Data")
-    patient_name = st.text_input("Patient Name", "John Doe")
-    skin_type = st.selectbox("Fitzpatrick Skin Type", ["I-II (Pale)", "III-IV (Medium)", "V-VI (Dark)"])
+    st.header("Patient Settings")
+    patient_name = st.text_input("Name", "Patient X")
+    skin_type = st.selectbox("Skin Type", ["I-II (Pale)", "III-IV (Medium)", "V-VI (Dark)"])
 
 uploaded_file = st.file_uploader("Upload OligoScan PDF", type="pdf")
 
-if uploaded_file is not None:
-    st.success("PDF Uploaded Successfully!")
-    
+if uploaded_file:
+    # Run Logic
     data = extract_data_from_pdf(uploaded_file)
-    adjusted_results, flags = run_adjustment(data, skin_type, patient_name)
+    results, flags, status, min_list, met_list = run_adjustment(data, skin_type, patient_name)
     
-    st.divider()
-    st.subheader(f"Results for {patient_name}")
+    # Display Summary
+    st.subheader(f"Analysis: {status}")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Detox Status", adjusted_results['Metals_Status'])
-        st.metric("Zinc (Adjusted)", adjusted_results['Zinc_Adj'], delta=round(adjusted_results['Zinc_Adj'] - data['Zinc'], 1))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Zinc (Adj)", results['Zinc'], delta=round(results['Zinc']-data['Zinc'], 2))
+    col2.metric("Magnesium (Adj)", results['Magnesium'], delta=round(results['Magnesium']-data['Magnesium'], 2))
     
-    with col2:
-        st.metric("Sulfur Level", data['Sulfur'])
-        st.metric("Magnesium (Adjusted)", adjusted_results['Magnesium_Adj'])
-
+    # Show Lead/Mercury logic specifically
+    delta_pb = round(results['Lead'] - data['Lead'], 4)
+    col3.metric("Lead (Projected)", results['Lead'], delta=delta_pb, delta_color="inverse")
+    
     if flags:
-        st.warning("Clinical Flags Detected:")
-        for flag in flags:
-            st.write(f"- {flag}")
-            
-    # Generate Download
-    pdf_bytes = create_pdf(patient_name, data, adjusted_results, flags)
+        st.warning(f"{flags[0]}")
+
+    # Generate PDF
+    pdf_data = create_pdf(patient_name, data, results, flags, status, min_list, met_list)
+    
     st.download_button(
-        label="📄 Download Clinical Report",
-        data=pdf_bytes,
-        file_name=f"{patient_name}_Adjusted_OligoScan.pdf",
+        "📄 Download Full Adjusted Report",
+        data=pdf_data,
+        file_name=f"{patient_name}_Adjusted.pdf",
         mime="application/pdf"
     )
