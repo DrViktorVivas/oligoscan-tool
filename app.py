@@ -12,7 +12,32 @@ This tool corrects OligoScan results based on **Bioavailability Logic**:
 2.  **Skin Optics:** Adjusts Zinc/Minerals based on Fitzpatrick Scale.
 """)
 
-# --- 2. THE PARSING LOGIC (Reads your specific PDF layout) ---
+# --- 2. HELPER FUNCTIONS ---
+
+def clean_text(text):
+    """
+    Replaces emojis and special chars with Latin-1 compatible text
+    to prevent PDF generation errors.
+    """
+    if not isinstance(text, str):
+        return str(text)
+    
+    # Replace specific emojis with text tags
+    replacements = {
+        "⛔": "[BLOCKED]",
+        "⚠️": "[RISK]",
+        "✅": "[OK]",
+        "🧬": "",
+        "🔴": "[ALERT]",
+        "📄": ""
+    }
+    
+    for char, replacement in replacements.items():
+        text = text.replace(char, replacement)
+    
+    # Remove any other characters that aren't Latin-1 compatible
+    return text.encode('latin-1', 'replace').decode('latin-1')
+
 def extract_data_from_pdf(pdf_file):
     data = {}
     full_text = ""
@@ -21,8 +46,7 @@ def extract_data_from_pdf(pdf_file):
         for page in pdf.pages:
             full_text += page.extract_text() + "\n"
             
-    # Regex patterns to find specific values in the OligoScan text lines
-    # Example raw text: "Sulphur 52.3 48.1 52.0" (Value is usually the first number)
+    # Regex patterns
     patterns = {
         'Sulfur': r"Sulphur\s+([\d,.]+)",
         'Zinc': r"Zinc\s+([\d,.]+)",
@@ -40,15 +64,17 @@ def extract_data_from_pdf(pdf_file):
     for key, pattern in patterns.items():
         match = re.search(pattern, full_text, re.IGNORECASE)
         if match:
-            # Convert "52,3" (Euro format) to "52.3" and make float
             clean_val = match.group(1).replace(',', '.')
-            data[key] = float(clean_val)
+            try:
+                data[key] = float(clean_val)
+            except ValueError:
+                data[key] = 0.0
         else:
-            data[key] = 0.0 # Default if not found
+            data[key] = 0.0
             
     return data
 
-# --- 3. THE ADJUSTMENT ENGINE (Your Custom Logic) ---
+# --- 3. THE ADJUSTMENT ENGINE ---
 def run_adjustment(data, skin_type, patient_name):
     flags = []
     results = {}
@@ -63,9 +89,9 @@ def run_adjustment(data, skin_type, patient_name):
     sulfur_blockage = (sulfur < 48.1)
     is_blocked = methylation_failure or sulfur_blockage
     
-    # Heavy Metals Logic
-    metals = ['Lead', 'Mercury', 'Cadmium', 'Aluminum', 'Gadolinium']
     results['Metals_Status'] = "OPTIMAL"
+    
+    metals = ['Lead', 'Mercury', 'Cadmium', 'Aluminum', 'Gadolinium']
     
     if is_blocked:
         results['Metals_Status'] = "⛔ BLOCKED (False Negatives Likely)"
@@ -82,11 +108,9 @@ def run_adjustment(data, skin_type, patient_name):
         for metal in metals:
             results[metal] = data.get(metal, 0)
 
-    # Mineral Logic (Zinc & Magnesium)
-    # Magnesium Correction (Serum correlation observed in patients)
+    # Mineral Logic
     results['Magnesium_Adj'] = round(data.get('Magnesium', 0) * 1.35, 2)
     
-    # Zinc Fitzpatrick Correction
     zinc_raw = data.get('Zinc', 0)
     if skin_type == "I-II (Pale)":
         results['Zinc_Adj'] = round(zinc_raw * 0.90, 2)
@@ -95,7 +119,7 @@ def run_adjustment(data, skin_type, patient_name):
         results['Zinc_Adj'] = round(zinc_raw * 1.15, 2)
         flags.append("Zinc adjusted up (+15%) for Melanin/Vascular compensation.")
     else:
-        results['Zinc_Adj'] = round(zinc_raw * 1.25, 2) # Darker skin
+        results['Zinc_Adj'] = round(zinc_raw * 1.25, 2)
         
     return results, flags
 
@@ -105,20 +129,24 @@ def create_pdf(patient_name, original_data, results, flags):
     pdf.add_page()
     pdf.set_font("Arial", size=12)
     
+    # Use clean_text() to sanitize inputs
+    clean_name = clean_text(patient_name)
+    clean_status = clean_text(results['Metals_Status'])
+    
     # Header
     pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt=f"Clinical Adjustment Report: {patient_name}", ln=True, align='C')
+    pdf.cell(0, 10, txt=f"Clinical Adjustment Report: {clean_name}", ln=True, align='C')
     pdf.line(10, 20, 200, 20)
     pdf.ln(15)
     
     # Status Section
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, f"Detox Status: {results['Metals_Status']}", ln=True)
+    pdf.cell(0, 10, f"Detox Status: {clean_status}", ln=True)
     pdf.set_font("Arial", size=10)
     
-    if "BLOCKED" in results['Metals_Status']:
+    if "BLOCKED" in clean_status:
         pdf.set_text_color(220, 50, 50) # Red
-        pdf.multi_cell(0, 10, "NOTE: Patient lacks Methylation cofactors (B6/B12) or Sulfur needed to mobilize metals. Low scan readings are likely false negatives.")
+        pdf.multi_cell(0, 10, clean_text("NOTE: Patient lacks Methylation cofactors (B6/B12) or Sulfur needed to mobilize metals. Low scan readings are likely false negatives."))
         pdf.set_text_color(0, 0, 0)
     
     pdf.ln(5)
@@ -132,9 +160,10 @@ def create_pdf(patient_name, original_data, results, flags):
     for metal in metals:
         raw = original_data.get(metal, 0)
         adj = results[metal]
-        pdf.cell(50, 10, f"{metal}", border=1)
-        pdf.cell(50, 10, f"Scan: {raw}", border=1)
-        pdf.cell(80, 10, f"Adjusted: {adj}", border=1, ln=True)
+        
+        pdf.cell(50, 10, clean_text(metal), border=1)
+        pdf.cell(50, 10, clean_text(f"Scan: {raw}"), border=1)
+        pdf.cell(80, 10, clean_text(f"Adjusted: {adj}"), border=1, ln=True)
 
     pdf.ln(10)
     
@@ -145,15 +174,25 @@ def create_pdf(patient_name, original_data, results, flags):
     
     # Zinc
     pdf.cell(50, 10, "Zinc", border=1)
-    pdf.cell(50, 10, f"Scan: {original_data.get('Zinc',0)}", border=1)
-    pdf.cell(80, 10, f"Adjusted: {results['Zinc_Adj']}", border=1, ln=True)
+    pdf.cell(50, 10, clean_text(f"Scan: {original_data.get('Zinc',0)}"), border=1)
+    pdf.cell(80, 10, clean_text(f"Adjusted: {results['Zinc_Adj']}"), border=1, ln=True)
     
     # Magnesium
     pdf.cell(50, 10, "Magnesium", border=1)
-    pdf.cell(50, 10, f"Scan: {original_data.get('Magnesium',0)}", border=1)
-    pdf.cell(80, 10, f"Adjusted: {results['Magnesium_Adj']}", border=1, ln=True)
+    pdf.cell(50, 10, clean_text(f"Scan: {original_data.get('Magnesium',0)}"), border=1)
+    pdf.cell(80, 10, clean_text(f"Adjusted: {results['Magnesium_Adj']}"), border=1, ln=True)
     
-    return pdf.output(dest='S').encode('latin-1')
+    # Flags Section
+    if flags:
+        pdf.ln(10)
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "Clinical Notes & Flags:", ln=True)
+        pdf.set_font("Arial", size=10)
+        for flag in flags:
+            pdf.multi_cell(0, 10, clean_text(f"- {flag}"))
+    
+    # Output
+    return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- 5. MAIN APP INTERFACE ---
 with st.sidebar:
@@ -166,13 +205,9 @@ uploaded_file = st.file_uploader("Upload OligoScan PDF", type="pdf")
 if uploaded_file is not None:
     st.success("PDF Uploaded Successfully!")
     
-    # 1. Parse
     data = extract_data_from_pdf(uploaded_file)
-    
-    # 2. Process
     adjusted_results, flags = run_adjustment(data, skin_type, patient_name)
     
-    # 3. Display Results on Screen
     st.divider()
     st.subheader(f"Results for {patient_name}")
     
@@ -190,7 +225,7 @@ if uploaded_file is not None:
         for flag in flags:
             st.write(f"- {flag}")
             
-    # 4. Generate Download
+    # Generate Download
     pdf_bytes = create_pdf(patient_name, data, adjusted_results, flags)
     st.download_button(
         label="📄 Download Clinical Report",
