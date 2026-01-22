@@ -4,8 +4,6 @@ import re
 from fpdf import FPDF
 
 # --- 1. SCIENTIFIC KNOWLEDGE BASE & REFERENCE RANGES ---
-# Derived from provided OligoScan reports (Source 1281) and medical literature.
-
 ANALYTE_DB = {
     # --- INTRACELLULAR ---
     'Magnesium': {
@@ -116,7 +114,7 @@ ANALYTE_DB = {
         'science': "Accumulates in bone/pineal gland. Antagonist to Iodine. [Grandjean 2019; DOI:10.1186/s12940-019-0551-x]"
     },
 
-    # --- HEAVY METALS (Thresholds based on typical 'safe' limits) ---
+    # --- HEAVY METALS ---
     'Aluminum': {'type': 'Metal', 'regex': r"Aluminium.*?\s+([\d,.]+)", 'unit': 'µg/L', 'min': 0, 'max': 0.015, 'science': "Neurotoxicant. Accumulates in bone/brain. Blood half-life <8 hours. [Klotz 2017; DOI:10.3390/nu9070741]"},
     'Antimony': {'type': 'Metal', 'regex': r"Antimony.*?\s+([\d,.]+)", 'unit': 'µg/L', 'min': 0, 'max': 0.005, 'science': "Respiratory/CVS toxicant. Binds sulfhydryl groups. [Sundar 2006; DOI:10.1016/j.mrrev.2006.02.001]"},
     'Silver': {'type': 'Metal', 'regex': r"Silver.*?\s+([\d,.]+)", 'unit': 'µg/L', 'min': 0, 'max': 0.010, 'science': "Antimicrobial accumulation (Argyria). Deposits in dermis. [Lansdown 2010; DOI:10.1155/2010/910686]"},
@@ -139,7 +137,7 @@ ANALYTE_DB = {
     'Vit_B12': {'type': 'Vitamin', 'regex': r"Vitamin B12\s+(\d+)%", 'unit': '%', 'min': 60, 'max': 100, 'science': "Critical cofactor for Methylation."},
 }
 
-# --- 2. HELPERS ---
+# --- 2. CONFIG & HELPERS ---
 st.set_page_config(page_title="OligoScan Advanced Analyzer", layout="wide")
 
 def clean_text(text):
@@ -151,23 +149,26 @@ def clean_text(text):
 
 def classify_analyte(val, min_ref, max_ref):
     """
-    Classifies a value into Low-, Low Normal, OK, Normal+, High, High+.
+    Revised 7-Point Clinical Scale:
+    Very Low | Low | Lower-End Normal | Normal | High-End Normal | High | Very High
     """
     if val <= 0: return "N/A"
     
+    # Threshold Calculations
     r_range = max_ref - min_ref
+    one_third = r_range / 3
     
-    if val < min_ref * 0.9: return "Low -"
+    # Logic
+    if val < min_ref * 0.9: return "Very Low"
     if val < min_ref: return "Low"
     
-    # Normal Zone Split into 3
-    third = r_range / 3
-    if val < (min_ref + third): return "Low Normal"
-    if val < (min_ref + 2 * third): return "OK"
-    if val <= max_ref: return "Normal +"
+    # Normal Range Split (3 Parts)
+    if val < (min_ref + one_third): return "Lower-End Normal"
+    if val < (min_ref + 2 * one_third): return "Normal"
+    if val <= max_ref: return "High-End Normal"
     
     if val < max_ref * 1.1: return "High"
-    return "High +"
+    return "Very High"
 
 def extract_all_data(pdf_file):
     data = {}
@@ -245,7 +246,7 @@ def run_clinical_analysis(data, skin_type):
 
     return adjusted, classifications, ratios, inferences
 
-# --- 4. PDF GENERATOR (UPDATED LAYOUT) ---
+# --- 4. PDF GENERATOR ---
 def create_report_pdf(patient_name, original, adjusted, classifications, ratios, inferences):
     pdf = FPDF(orientation='P', format='A4')
     pdf.add_page()
@@ -266,7 +267,6 @@ def create_report_pdf(patient_name, original, adjusted, classifications, ratios,
 
     # TABLE GENERATOR FUNCTION
     def add_table_section(title, filter_type):
-        # Section Header
         pdf.set_font("Arial", 'B', 12)
         pdf.set_fill_color(50, 50, 100)
         pdf.set_text_color(255, 255, 255)
@@ -276,30 +276,38 @@ def create_report_pdf(patient_name, original, adjusted, classifications, ratios,
         
         for name, config in ANALYTE_DB.items():
             if config['type'] == filter_type:
+                raw_val = original.get(name, 0.0)
                 adj = adjusted.get(name, 0.0)
                 status = classifications.get(name, "-")
                 science = config.get('science', '')
                 
-                # --- ROW 1: DATA ---
-                pdf.set_fill_color(220, 230, 255) # Light Blue
+                # --- ROW 1: DATA (Name | Raw | Adjusted | Status) ---
+                pdf.set_fill_color(230, 235, 250) # Light Blue
                 pdf.set_font("Arial", 'B', 10)
                 
-                # Status Color Logic
-                status_color = (0, 0, 0)
-                if "Low" in status: status_color = (180, 0, 0)
-                elif "High" in status: status_color = (180, 0, 0)
-                elif "OK" in status: status_color = (0, 100, 0)
+                # Colors for Status
+                if "Very Low" in status or "Very High" in status: pdf.set_text_color(200, 0, 0)
+                elif "Low" in status or "High" in status: pdf.set_text_color(150, 0, 0)
+                elif "Normal" in status or "OK" in status: pdf.set_text_color(0, 100, 0)
+                else: pdf.set_text_color(0,0,0)
                 
-                # Print Analyte Name
-                pdf.cell(60, 7, clean_text(name), 1, 0, 'L', 1)
+                # Columns: Name(50), Raw(25), Adj(25), Status(90)
+                pdf.cell(50, 7, clean_text(name), 1, 0, 'L', 1)
                 
-                # Print Value
+                # Raw Value (Black)
+                pdf.set_text_color(0, 0, 0)
                 pdf.set_font("Arial", '', 10)
-                pdf.cell(40, 7, f"{adj} {clean_text(config['unit'])}", 1, 0, 'C', 1)
+                pdf.cell(25, 7, str(raw_val), 1, 0, 'C', 1)
                 
-                # Print Status (Colored)
+                # Adjusted Value (Black)
+                pdf.cell(25, 7, f"{adj}", 1, 0, 'C', 1)
+                
+                # Status Text (Colored)
+                if "Very Low" in status or "Very High" in status: pdf.set_text_color(200, 0, 0)
+                elif "Low" in status or "High" in status: pdf.set_text_color(150, 0, 0)
+                elif "Normal" in status or "OK" in status: pdf.set_text_color(0, 100, 0)
+                
                 pdf.set_font("Arial", 'B', 10)
-                pdf.set_text_color(*status_color)
                 pdf.cell(90, 7, clean_text(status), 1, 1, 'C', 1)
                 
                 # --- ROW 2: SCIENCE (Full Width) ---
@@ -307,7 +315,7 @@ def create_report_pdf(patient_name, original, adjusted, classifications, ratios,
                 pdf.set_font("Arial", 'I', 8)
                 pdf.set_fill_color(255, 255, 255) # White
                 
-                # MultiCell for wrapping text
+                # Full width cell below
                 pdf.multi_cell(0, 5, clean_text(f"Evidence: {science}"), 1, 'L', 0)
                 
         pdf.ln(5)
@@ -319,7 +327,7 @@ def create_report_pdf(patient_name, original, adjusted, classifications, ratios,
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- 5. UI ---
-st.title("🧬 OligoScan Advanced Tool (v7.0)")
+st.title("🧬 OligoScan Advanced Tool (v8.0)")
 st.sidebar.header("Configuration")
 patient_name = st.sidebar.text_input("Patient Name")
 skin_type = st.sidebar.selectbox("Skin Type", ["I-II (Pale)", "III-IV (Medium)", "V-VI (Dark)"])
